@@ -37,6 +37,7 @@ import type {
     ResponseFunctionCallArgumentsDeltaEvent,
     ResponseFunctionCallArgumentsDoneEvent,
     ResponseFunctionToolCall,
+    ResponseFunctionWebSearch,
     ResponseInputItem,
     ResponseStreamEvent,
     ResponseToolSearchCall,
@@ -45,6 +46,7 @@ import type {
 import type { ResponsesModel } from 'openai/resources/shared';
 import { DeveloperMessageSettings, OpenAiModelUtils } from './openai-language-model';
 import { JSONSchema, JSONSchemaDefinition } from 'openai/lib/jsonschema';
+import { OPENAI_WEB_SEARCH, OPENAI_WEB_SEARCH_CALL_DATA_KEY, OPENAI_WEB_SEARCH_REPLAY_DATA_KEY } from './openai-server-tools';
 
 /**
  * User-facing name under which the provider's built-in deferred-tool search is surfaced in the chat UI.
@@ -98,7 +100,15 @@ export class OpenAiResponseApiUtils {
         }
 
         const { instructions, input } = this.processMessages(request.messages, developerMessageSettings, model);
-        const tools = this.convertToolsForResponseApi(request.tools, request.deferredToolIds);
+        const tools = this.convertToolsForResponseApi(request.tools, request.deferredToolIds, request.serverTools);
+        const effectiveSettings = request.serverTools?.includes(OPENAI_WEB_SEARCH) ? {
+            ...settings,
+            include: [...new Set([
+                ...(Array.isArray(settings.include) ? settings.include : []),
+                'web_search_call.action.sources',
+                'reasoning.encrypted_content'
+            ])]
+        } : settings;
 
         // If no tools are provided, use simple response handling
         if (!tools || tools.length === 0) {
@@ -107,7 +117,7 @@ export class OpenAiResponseApiUtils {
                     model: model as ResponsesModel,
                     instructions,
                     input,
-                    ...settings
+                    ...effectiveSettings
                 });
                 return { stream: this.createSimpleResponseApiStreamIterator(stream, cancellationToken) };
             } else {
@@ -115,7 +125,7 @@ export class OpenAiResponseApiUtils {
                     model: model as ResponsesModel,
                     instructions,
                     input,
-                    ...settings
+                    ...effectiveSettings
                 });
 
                 return {
@@ -132,7 +142,7 @@ export class OpenAiResponseApiUtils {
         const iterator = new ResponseApiToolCallIterator(
             openai,
             request,
-            settings,
+            effectiveSettings,
             model,
             modelUtils,
             developerMessageSettings,
@@ -149,13 +159,9 @@ export class OpenAiResponseApiUtils {
     /**
      * Converts ToolRequest objects to the format expected by the Response API.
      */
-    convertToolsForResponseApi(tools?: ToolRequest[], deferredToolIds?: string[]): Tool[] | undefined {
-        if (!tools || tools.length === 0) {
-            return undefined;
-        }
-
+    convertToolsForResponseApi(tools?: ToolRequest[], deferredToolIds?: string[], serverTools?: string[]): Tool[] | undefined {
         const deferred = new Set(deferredToolIds ?? []);
-        const converted: Tool[] = tools.map(tool => ({
+        const converted: Tool[] = (tools ?? []).map(tool => ({
             type: 'function' as const,
             name: tool.name,
             description: tool.description || '',
@@ -169,7 +175,13 @@ export class OpenAiResponseApiUtils {
         if (deferred.size > 0) {
             converted.push({ type: 'tool_search', execution: 'server' });
         }
-        console.debug(`Converted ${tools.length} tools for Response API:`, converted.map(t => t.type === 'function' ? t.name : t.type));
+        if (serverTools?.includes(OPENAI_WEB_SEARCH)) {
+            converted.push({ type: 'web_search' });
+        }
+        if (converted.length === 0) {
+            return undefined;
+        }
+        console.debug(`Converted ${(tools ?? []).length} tools for Response API:`, converted.map(t => t.type === 'function' ? t.name : t.type));
         return converted;
     }
 
@@ -339,8 +351,14 @@ export class OpenAiResponseApiUtils {
             } else if (LanguageModelMessage.isThinkingMessage(message)) {
                 // Pass
             } else if (LanguageModelMessage.isServerToolUseMessage(message)) {
-                // 'server_tool_use' replay messages can appear when switching providers within a
-                // session; OpenAI has no equivalent, so they are skipped.
+                const rawReplay = message.data?.[OPENAI_WEB_SEARCH_REPLAY_DATA_KEY];
+                if (message.name === OPENAI_WEB_SEARCH && rawReplay) {
+                    try {
+                        input.push(...JSON.parse(rawReplay) as ResponseInputItem[]);
+                    } catch {
+                        // Skip malformed provider data.
+                    }
+                }
             } else {
                 unreachable(message);
             }
@@ -377,6 +395,8 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
     protected readonly tools: Tool[] | undefined;
     protected readonly instructions?: string;
     protected currentResponseText = '';
+    protected pendingWebSearchReplayItems: ResponseInputItem[] = [];
+    protected currentWebSearchReplayItems: ResponseInputItem[] = [];
 
     constructor(
         protected readonly openai: OpenAI,
@@ -394,7 +414,7 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
         const { instructions, input } = utils.processMessages(request.messages, developerMessageSettings, model);
         this.instructions = instructions;
         this.currentInput = input;
-        this.tools = utils.convertToolsForResponseApi(request.tools, request.deferredToolIds);
+        this.tools = utils.convertToolsForResponseApi(request.tools, request.deferredToolIds, request.serverTools);
         this.maxIterations = runnerOptions.maxChatCompletions || 100;
 
         // Start the first iteration
@@ -463,6 +483,8 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
     protected async processStream(): Promise<void> {
         this.currentToolCalls.clear();
         this.currentResponseText = '';
+        this.pendingWebSearchReplayItems = [];
+        this.currentWebSearchReplayItems = [];
 
         if (this.isStreaming) {
             // Use streaming API
@@ -507,6 +529,16 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
         this.currentResponseText = response.output_text || '';
         if (this.currentResponseText) {
             this.handleIncoming({ content: this.currentResponseText });
+        }
+
+        const webSearchReplayItems: ResponseInputItem[] = [];
+        for (const item of response.output ?? []) {
+            if (item.type === 'reasoning') {
+                webSearchReplayItems.push(item);
+            } else if (item.type === 'web_search_call') {
+                this.handleWebSearchCall(item, true, [...webSearchReplayItems, item]);
+                webSearchReplayItems.length = 0;
+            }
         }
 
         // Surface any deferred-tool search OpenAI executed while producing this response (see handleToolSearchOutput).
@@ -566,6 +598,8 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
                     this.handleFunctionCallAdded(event.item);
                 } else if (event.item?.type === 'tool_search_call') {
                     this.handleToolSearchCall(event.item);
+                } else if (event.item?.type === 'web_search_call') {
+                    this.handleWebSearchCall(event.item, false);
                 }
                 break;
 
@@ -589,6 +623,11 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
                     });
                 } else if (event.item?.type === 'tool_search_output') {
                     this.handleToolSearchOutput(event.item);
+                } else if (event.item?.type === 'reasoning') {
+                    this.pendingWebSearchReplayItems.push(event.item);
+                } else if (event.item?.type === 'web_search_call') {
+                    this.handleWebSearchCall(event.item, true, [...this.pendingWebSearchReplayItems, event.item]);
+                    this.pendingWebSearchReplayItems = [];
                 }
                 break;
 
@@ -680,6 +719,33 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
             toolCall.name = event.name || toolCall.name;
             toolCall.arguments = event.arguments || toolCall.arguments;
         }
+    }
+
+    protected handleWebSearchCall(item: ResponseFunctionWebSearch, finished: boolean, replayItems?: ResponseInputItem[]): void {
+        if (finished && replayItems) {
+            this.currentWebSearchReplayItems.push(...replayItems);
+        }
+        const action = JSON.stringify(item.action);
+        this.handleIncoming({
+            server_tool_calls: [{
+                id: item.id,
+                name: OPENAI_WEB_SEARCH,
+                arguments: action,
+                finished,
+                result: finished ? {
+                    content: [{
+                        type: 'text',
+                        text: item.status === 'failed'
+                            ? nls.localize('theia/ai/openai/webSearch/failed', 'Web search failed.')
+                            : nls.localize('theia/ai/openai/webSearch/completed', 'Web search completed.')
+                    }]
+                } : undefined,
+                data: finished ? {
+                    [OPENAI_WEB_SEARCH_CALL_DATA_KEY]: JSON.stringify(item),
+                    ...(replayItems ? { [OPENAI_WEB_SEARCH_REPLAY_DATA_KEY]: JSON.stringify(replayItems) } : {})
+                } : undefined
+            }]
+        });
     }
 
     /**
@@ -822,7 +888,7 @@ class ResponseApiToolCallIterator implements AsyncIterableIterator<LanguageModel
             }
         }
 
-        this.currentInput = [...this.currentInput, assistantMessage, ...functionCalls, ...toolResults];
+        this.currentInput = [...this.currentInput, ...this.currentWebSearchReplayItems, assistantMessage, ...functionCalls, ...toolResults];
     }
 
     protected handleIncoming(message: LanguageModelStreamResponsePart): void {
