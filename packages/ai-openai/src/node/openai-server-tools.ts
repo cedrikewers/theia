@@ -17,7 +17,6 @@
 import { ServerToolDescriptor } from '@theia/ai-core';
 
 export const OPENAI_WEB_SEARCH = 'web_search';
-export const OPENAI_WEB_SEARCH_CALL_DATA_KEY = 'openAiWebSearchCall';
 export const OPENAI_WEB_SEARCH_REPLAY_DATA_KEY = 'openAiWebSearchReplay';
 
 export const OPENAI_SERVER_TOOLS: ServerToolDescriptor[] = [{
