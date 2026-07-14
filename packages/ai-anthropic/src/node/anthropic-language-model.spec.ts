@@ -32,7 +32,7 @@ const REASONING_SUPPORT: ReasoningSupport = {
     defaultLevel: 'auto'
 };
 
-/** Test helper that exposes the otherwise protected getSettings(), createTools(), applyBetaParams() and applyCompactionParams() methods. */
+/** Test helper that exposes the otherwise protected getSettings(), createTools(), and applyBetaParams() methods. */
 class TestableAnthropicModel extends AnthropicModel {
     public callGetSettings(request: LanguageModelRequest): Readonly<Record<string, unknown>> {
         return this.getSettings(request);
@@ -841,10 +841,15 @@ describe('AnthropicModel', () => {
             return undefined;
         }
 
-        function createCompactionModel(serverSideCompactionEnabledByDefault: boolean, serverSideCompactionSupport: boolean = true): TestableAnthropicModel {
+        function createCompactionModel(
+            serverSideCompactionEnabledByDefault: boolean,
+            serverSideCompactionSupport: boolean = true,
+            serverSideCompactionTokenThresholdByDefault?: number
+        ): TestableAnthropicModel {
             return new TestableAnthropicModel(
                 'test-id', 'claude-opus-4-6', { status: 'ready' }, true, false, () => 'test-key', undefined,
-                DEFAULT_MAX_TOKENS, 3, undefined, undefined, undefined, undefined, undefined, undefined, serverSideCompactionSupport, serverSideCompactionEnabledByDefault
+                DEFAULT_MAX_TOKENS, 3, undefined, undefined, undefined, undefined, undefined, undefined, serverSideCompactionSupport,
+                serverSideCompactionEnabledByDefault, undefined, serverSideCompactionTokenThresholdByDefault
             );
         }
 
@@ -902,6 +907,29 @@ describe('AnthropicModel', () => {
 
                 expect(beta.betas).to.deep.equal(['compact-2026-01-12']);
                 expect(beta.context_management).to.deep.equal({ edits: [{ type: 'compact_20260112' }] });
+            });
+
+            it('adds the model default token threshold', () => {
+                const model = createCompactionModel(true, true, 280_000);
+                const params = model.callApplyBetaParams(baseParams(), { messages: [] });
+                const beta = params as Anthropic.MessageCreateParams & Anthropic.Beta.Messages.MessageCreateParams;
+
+                expect(beta.context_management).to.deep.equal({
+                    edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 280_000 } }]
+                });
+            });
+
+            it('uses the session token threshold over the model default', () => {
+                const model = createCompactionModel(true, true, 280_000);
+                const params = model.callApplyBetaParams(baseParams(), {
+                    messages: [],
+                    compaction: { tokenThreshold: 300_000 }
+                });
+                const beta = params as Anthropic.MessageCreateParams & Anthropic.Beta.Messages.MessageCreateParams;
+
+                expect(beta.context_management).to.deep.equal({
+                    edits: [{ type: 'compact_20260112', trigger: { type: 'input_tokens', value: 300_000 } }]
+                });
             });
 
             it('leaves params unchanged when compaction is disabled by default', () => {
@@ -969,7 +997,7 @@ describe('AnthropicModel', () => {
             constructor(memoryToolFolder?: string, useCaching: boolean = false) {
                 super('test-id', 'claude-opus-4-6', { status: 'ready' }, true, useCaching,
                     () => 'test-key', undefined, DEFAULT_MAX_TOKENS, 3,
-                    undefined, undefined, undefined, undefined, undefined, undefined, false, false, memoryToolFolder);
+                    undefined, undefined, undefined, undefined, undefined, undefined, true, false, memoryToolFolder);
             }
 
             public callCreateTools(request: LanguageModelRequest): Array<Anthropic.Messages.Tool | Anthropic.Messages.MemoryTool20250818> | undefined {

@@ -23,6 +23,8 @@ import {
     LanguageModel,
     LanguageModelSelector,
     resolveCompactionDefault,
+    resolveCompactionTokenThreshold,
+    resolveCompactionTokenThresholdDefault,
     resolveServerSideCompaction
 } from './language-model';
 
@@ -193,6 +195,14 @@ describe('compaction contract', () => {
         expect(resolveCompactionDefault(false, 'default')).to.equal(false);
         expect(resolveCompactionDefault(false, 'enabled')).to.equal(true);
         expect(resolveCompactionDefault(true, 'disabled')).to.equal(false);
+    });
+    it('resolves compaction token thresholds with session, provider, global precedence', () => {
+        expect(resolveCompactionTokenThresholdDefault(undefined, undefined)).to.equal(undefined);
+        expect(resolveCompactionTokenThresholdDefault(100_000, undefined)).to.equal(100_000);
+        expect(resolveCompactionTokenThresholdDefault(100_000, 200_000)).to.equal(200_000);
+        expect(resolveCompactionTokenThreshold(undefined, undefined)).to.equal(undefined);
+        expect(resolveCompactionTokenThreshold(200_000, undefined)).to.equal(200_000);
+        expect(resolveCompactionTokenThreshold(200_000, { tokenThreshold: 300_000 })).to.equal(300_000);
     });
     it('resolves server-side compaction with capability gate and session-wins precedence', () => {
         // capability gate

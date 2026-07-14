@@ -117,7 +117,8 @@ export class OpenAiLanguageModelsManagerImpl implements OpenAiLanguageModelsMana
                     maxInputTokens: metadata.maxInputTokens,
                     serverTools,
                     serverSideCompactionSupport: metadata.serverSideCompactionSupport,
-                    serverSideCompactionEnabledByDefault: modelDescription.serverSideCompactionEnabledByDefault ?? false
+                    serverSideCompactionEnabledByDefault: modelDescription.serverSideCompactionEnabledByDefault ?? false,
+                    serverSideCompactionTokenThresholdByDefault: modelDescription.serverSideCompactionTokenThresholdByDefault
                 });
             } else {
                 this.languageModelRegistry.addLanguageModels([
@@ -141,7 +142,8 @@ export class OpenAiLanguageModelsManagerImpl implements OpenAiLanguageModelsMana
                         metadata.maxInputTokens,
                         serverTools,
                         metadata.serverSideCompactionSupport,
-                        modelDescription.serverSideCompactionEnabledByDefault ?? false
+                        modelDescription.serverSideCompactionEnabledByDefault ?? false,
+                        modelDescription.serverSideCompactionTokenThresholdByDefault
                     )
                 ]);
             }

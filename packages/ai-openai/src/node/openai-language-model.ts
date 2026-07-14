@@ -25,6 +25,7 @@ import {
     ImageContent,
     LanguageModelStatus,
     ReasoningSupport,
+    resolveCompactionTokenThreshold,
     resolveServerSideCompaction,
     ServerToolDescriptor
 } from '@theia/ai-core';
@@ -116,7 +117,8 @@ export class OpenAiModel implements LanguageModel {
         public maxInputTokens?: number,
         public serverTools?: ServerToolDescriptor[],
         public serverSideCompactionSupport: boolean = false,
-        public serverSideCompactionEnabledByDefault: boolean = false
+        public serverSideCompactionEnabledByDefault: boolean = false,
+        public serverSideCompactionTokenThresholdByDefault?: number
     ) { }
 
     /** Reasoning-level translation lives in {@link openAiReasoningFor}. */
@@ -263,7 +265,14 @@ export class OpenAiModel implements LanguageModel {
      */
     protected applyResponseApiCompaction(settings: Record<string, unknown>, request: LanguageModelRequest): Record<string, unknown> {
         if (resolveServerSideCompaction(this.serverSideCompactionSupport, this.serverSideCompactionEnabledByDefault, request.compaction)) {
-            return { ...settings, context_management: [{ type: 'compaction' }] };
+            const tokenThreshold = resolveCompactionTokenThreshold(this.serverSideCompactionTokenThresholdByDefault, request.compaction);
+            return {
+                ...settings,
+                context_management: [{
+                    type: 'compaction',
+                    ...(tokenThreshold !== undefined && { compact_threshold: tokenThreshold })
+                }]
+            };
         }
         return settings;
     }
