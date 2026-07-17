@@ -44,17 +44,21 @@ export class WebviewContextKeys {
         this.activeWebviewPanelId = this.contextKeyService.createKey('activeWebviewPanelId', '');
         this.activeCustomEditorId = this.contextKeyService.createKey('activeCustomEditorId', '');
         this.applicationShell.onDidChangeCurrentWidget(this.handleDidChangeCurrentWidget, this);
+        this.updateContextKeys(this.applicationShell.currentWidget);
     }
 
     protected handleDidChangeCurrentWidget(change: FocusTracker.IChangedArgs<Widget>): void {
-        const { newValue } = change;
-        if (newValue instanceof CustomEditorWidget) {
-            this.activeCustomEditorId.set(newValue.viewType);
+        this.updateContextKeys(change.newValue);
+    }
+
+    protected updateContextKeys(widget: Widget | undefined | null): void {
+        if (widget instanceof CustomEditorWidget) {
+            this.activeCustomEditorId.set(widget.viewType);
         } else {
             this.activeCustomEditorId.set('');
         }
-        if (newValue instanceof WebviewWidget) {
-            this.activeWebviewPanelId.set(newValue.viewType);
+        if (widget instanceof WebviewWidget) {
+            this.activeWebviewPanelId.set(widget.viewType);
         } else {
             this.activeWebviewPanelId.set('');
         }
