@@ -93,6 +93,25 @@ export interface WebviewConsoleLog {
     optionalParams?: string;
 }
 
+/**
+ * If the DOM's currently focused element is outside of `container` (and isn't `container`
+ * itself), blur it.
+ *
+ * Real Theia widgets naturally blur the previously focused element when they gain real DOM
+ * focus. Webviews only *emulate* focus (see `WebviewWidget`'s `did-focus` handler below), so
+ * without this a previously focused element (e.g. a Monaco editor's hidden textarea) never
+ * actually loses focus and its `when`-clause contexts (e.g. `editorTextFocus`) remain stale.
+ * That stale context caused keybindings such as Ctrl+A to still apply to the previously active
+ * editor even while a webview is focused.
+ * See https://github.com/eclipse-theia/theia/issues/15311
+ */
+export function blurActiveElementOutside(container: HTMLElement): void {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== container && !container.contains(active)) {
+        active.blur();
+    }
+}
+
 @injectable()
 export class WebviewWidgetIdentifier {
     id: string;
@@ -313,10 +332,12 @@ export class WebviewWidget extends BaseWidget implements StatefulWidget, Extract
         this.toHide.push(this.on(WebviewMessageChannels.doUpdateState, (state: any) => {
             this._state = state;
         }));
-        this.toHide.push(this.on(WebviewMessageChannels.didFocus, () =>
-            // emulate the webview focus without actually changing focus
-            this.node.dispatchEvent(new FocusEvent('focus'))
-        ));
+        this.toHide.push(this.on(WebviewMessageChannels.didFocus, () => {
+            blurActiveElementOutside(this.node);
+            // still needed: Lumino's FocusTracker only reacts to real focus events,
+            // and the wrapper element itself isn't a natural focus target.
+            this.node.dispatchEvent(new FocusEvent('focus'));
+        }));
         this.toHide.push(this.on(WebviewMessageChannels.didBlur, () => {
             /* no-op: webview loses focus only if another element gains focus in the main window */
         }));
